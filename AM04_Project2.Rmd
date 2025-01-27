@@ -1,0 +1,561 @@
+---
+title: "Data Science Capstone Project"
+author: "Benjamin Burquier"
+date: "2024-12-11"
+---
+
+
+```{r, load_libraries, include = FALSE}
+
+if(!is.element("tidyverse", installed.packages()[,1]))
+{  install.packages("tidyverse", repos = "http://cran.us.r-project.org")}
+
+if(!is.element("Hmisc", installed.packages()[,1]))
+{  install.packages("Hmisc", repos = "http://cran.us.r-project.org")} #package for data summary using `describe`
+
+if(!is.element("ggplot2", installed.packages()[,1]))
+{  install.packages("ggplot2", repos = "http://cran.us.r-project.org")} #package for plots
+if(!is.element("ggthemes", installed.packages()[,1]))
+{  install.packages("ggthemes", repos = "http://cran.us.r-project.org")} #package to make fancier ggplots
+
+if(!is.element("janitor", installed.packages()[,1]))
+{ install.packages("janitor", repos = "http://cran.us.r-project.org")} #package to visualize results of machine learning tools
+if(!is.element("rpart.plot", installed.packages()[,1]))
+{  install.packages("rpart.plot", repos = "http://cran.us.r-project.org")} #package to visualize trees
+
+library(rpart.plot) # For visualizing decision trees
+library(caret)      # For training machine learning models and cross-validation
+library(tidyverse)  # For data manipulation and visualizations
+library(lubridate)  # For working with date and time data
+library(janitor)    # For cleaning data and creating tidy data sets
+library(Hmisc)      # For descriptive statistics and summarizing data
+```
+
+
+
+# Load data
+
+```{r}
+
+# Load the datasets
+train_data <- read.csv("training_data_assignment_with_prices.csv")
+test_data <- read.csv("test_data_assignment.csv")
+
+# Verify dimensions and a preview of the data
+cat("Training Data Dimensions: ", dim(train_data), "\n")
+cat("Test Data Dimensions: ", dim(test_data), "\n")
+head(train_data)
+head(test_data)
+
+# Check for missing values
+cat("Missing Values in Training Data:\n")
+print(colSums(is.na(train_data)))
+
+cat("\nMissing Values in Test Data:\n")
+print(colSums(is.na(test_data)))
+
+# Fix data types
+# Convert dates
+train_data <- train_data %>% mutate(date=as.Date(date))
+test_data<-test_data %>% mutate(date=as.Date(date))
+
+# Convert character columns to factors
+train_data <- train_data %>% mutate_if(is.character,as.factor)
+test_data<-test_data %>% mutate_if(is.character,as.factor)
+
+# Align factor levels between train and test data
+for (col in names(train_data)) {
+  if (is.factor(train_data[[col]]) & is.factor(test_data[[col]])) {
+    test_data[[col]] <- factor(test_data[[col]], levels = levels(train_data[[col]]))
+  }
+}
+
+# Inspect the structure of the datasets
+cat("\nTraining Data Structure:\n")
+str(train_data)
+
+cat("\nTest Data Structure:\n")
+str(test_data)
+
+```
+
+
+
+# Data Visualization
+
+```{r visualize}
+library(ggplot2)
+library(scales)  # For formatting axis labels
+
+# Scatter plot for total_floor_area vs. price with a trend line
+ggplot(train_data, aes(x = total_floor_area, y = price)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +  # Add a trend line
+  labs(
+    title = "Positive Correlation Between Property Size and Price",
+    x = "Total Floor Area (m²)",
+    y = "Price (£)"
+  ) +
+  scale_y_continuous(labels = label_number(scale_cut = scales::cut_short_scale())) +
+  theme_minimal()
+
+library(GGally)
+
+# Create a pair plot with selected features
+selected_features <- train_data %>%
+  select(price, total_floor_area, number_habitable_rooms, distance_to_station, average_income)
+
+# Create pair plot
+ggpairs(selected_features)
+```
+
+
+```{r, correlation table, warning=FALSE, message=FALSE}
+# Creating a correlation table
+library("GGally")
+train_data %>%
+  select(-ID) %>% #keep Y variable last
+  ggcorr(method = c("pairwise", "pearson"), 
+         layout.exp = 2,
+         label_round=2, 
+         label = TRUE,
+         label_size = 2,
+         hjust = 1,
+         nbreaks = 5,
+         size = 2,
+         angle = 0
+         ) +
+  ggtitle("Correlation Matrix of Variables")
+```
+
+
+# Model n°1 - Linear Regression Model
+
+```{r LR model}
+# Log-transform price
+train_data$log_price <- log(train_data$price)
+
+# Define cross-validation control
+control <- trainControl(
+    method = "cv",
+    number = 5,
+    verboseIter = TRUE
+)
+
+# Fit linear regression model
+model_lm <- train(
+    log_price ~ total_floor_area + number_habitable_rooms + co2_emissions_current + 
+    energy_consumption_current + average_income + distance_to_station,
+    data = train_data,
+    method = "lm",
+    trControl = control
+)
+
+# Summarize the model
+summary(model_lm$finalModel)
+
+# Predict on training set
+train_predictions <- predict(model_lm, train_data)
+
+# Convert predictions back to original scale
+train_data$predicted_price <- exp(train_predictions)
+
+# Predict on test data
+lm_predictions <- predict(model_lm, test_data)
+
+# Evaluate model performance
+rmse_value <- RMSE(train_data$predicted_price, train_data$price)
+r2_value <- R2(train_data$predicted_price, train_data$price)
+cat("RMSE:", rmse_value, "\nR²:", r2_value)
+
+
+# Visualize residuals
+residuals <- residuals(model_lm$finalModel)
+ggplot(data = NULL, aes(x = train_predictions, y = residuals)) +
+    geom_point(alpha = 0.5) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "Residuals vs Fitted Values", x = "Fitted Values (log scale)", y = "Residuals") +
+    theme_minimal()
+
+# Variable importance
+importance <- varImp(model_lm, scale = TRUE)
+plot(importance)
+
+```
+
+
+
+# Evaluating and Visualizing the Performance of the Linear Regression Model on the Test Dataset
+
+```{r}
+# Predict on the test data (log-transformed predictions)
+test_predictions_log <- predict(model_lm, test_data)
+
+# Convert predictions back to the original scale
+test_data$predicted_price <- exp(test_predictions_log)
+
+# Evaluate model performance on test data
+test_rmse <- RMSE(test_data$predicted_price, test_data$asking_price)
+test_r2 <- R2(test_data$predicted_price, test_data$asking_price)
+
+# Print evaluation metrics
+cat("Test RMSE:", test_rmse, "\nTest R²:", test_r2)
+
+# Visualize predictions vs. actual prices
+ggplot(test_data, aes(x = asking_price, y = predicted_price)) +
+    geom_point(alpha = 0.5, color = "blue") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "Predicted vs Actual Prices", x = "Actual Asking Price", y = "Predicted Price") +
+    theme_minimal()
+```
+
+
+
+# Model n°2 - Decision Tree
+
+```{r tree model}
+
+# Define cross-validation control
+control <- trainControl(
+    method = "cv",  # Use cross-validation
+    number = 10,    # Number of folds
+    verboseIter = TRUE
+)
+
+# Train a Decision Tree Model
+model2_tree <- train(
+  price ~ total_floor_area + number_habitable_rooms + co2_emissions_current + 
+    energy_consumption_current + average_income + distance_to_station,
+  data = train_data,
+  method = "rpart",        # Decision tree algorithm
+  trControl = control,     # Cross-validation control
+  tuneLength = 10          # Explore 10 complexity parameter values
+)
+
+# View performance results for different hyperparameter values
+cat("Tree Model Results:\n")
+print(model2_tree$results)
+
+# Visualize the final tree
+rpart.plot(model2_tree$finalModel, box.palette = "RdBu", shadow.col = "gray", nn = TRUE)
+
+# Visualize variable importance
+importance_tree <- varImp(model2_tree, scale = TRUE)
+cat("Variable Importance from Tree Model:\n")
+print(importance_tree)
+plot(importance_tree, main = "Tree Model Variable Importance")
+
+# Predict on training data
+tree_train_predictions <- predict(model2_tree, train_data)
+
+# Evaluate model performance on training data
+tree_rmse_train <- RMSE(tree_train_predictions, train_data$price)
+tree_r2_train <- R2(tree_train_predictions, train_data$price)
+cat("Tree Model - Training RMSE:", tree_rmse_train, "\n")
+cat("Tree Model - Training R²:", tree_r2_train, "\n")
+
+# Predict on test data
+tree_test_predictions <- predict(model2_tree, test_data)
+
+# Evaluate model performance on test data
+tree_rmse_test <- RMSE(tree_test_predictions, test_data$asking_price)
+tree_r2_test <- R2(tree_test_predictions, test_data$asking_price)
+cat("Tree Model - Test RMSE:", tree_rmse_test, "\n")
+cat("Tree Model - Test R²:", tree_r2_test, "\n")
+
+
+```
+
+
+# Model n°3 - Random Forest
+
+```{r}
+# Random Forest Model
+set.seed(123)  # For reproducibility
+model_rf <- train(
+  price ~ total_floor_area + number_habitable_rooms + co2_emissions_current + 
+    energy_consumption_current + average_income + distance_to_station,
+  data = train_data,
+  method = "rf",           # Random Forest
+  trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE),  # 5-fold cross-validation
+  tuneGrid = expand.grid(mtry = c(2, 3, 4)),  # Tuning the mtry parameter ie the number of variables randomly sampled as candidates at each split in a tree
+  ntree = 100  # Number of trees in the forest
+)
+
+# Evaluate performance on training data
+rf_train_predictions <- predict(model_rf, train_data)
+rf_train_rmse <- RMSE(rf_train_predictions, train_data$price)
+rf_train_r2 <- R2(rf_train_predictions, train_data$price)
+
+# Evaluate performance on test data
+rf_test_predictions <- predict(model_rf, test_data)
+rf_test_rmse <- RMSE(rf_test_predictions, test_data$asking_price)
+rf_test_r2 <- R2(rf_test_predictions, test_data$asking_price)
+
+# Print results
+cat("Random Forest - Training RMSE:", rf_train_rmse, "\n")
+cat("Random Forest - Training R²:", rf_train_r2, "\n")
+cat("Random Forest - Test RMSE:", rf_test_rmse, "\n")
+cat("Random Forest - Test R²:", rf_test_r2, "\n")
+
+```
+
+# Model n°4 - KNN
+
+```{r}
+# KNN Model
+set.seed(123)
+model_knn <- train(
+  price ~ total_floor_area + number_habitable_rooms + co2_emissions_current + 
+    energy_consumption_current + average_income + distance_to_station,
+  data = train_data,
+  method = "knn",  # K-Nearest Neighbors
+  trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE),  # 5-fold cross-validation
+  tuneGrid = expand.grid(k = c(3, 5, 7, 10))  # Number of neighbors
+)
+
+# Evaluate performance on training data
+knn_train_predictions <- predict(model_knn, train_data)
+knn_train_rmse <- RMSE(knn_train_predictions, train_data$price)
+knn_train_r2 <- R2(knn_train_predictions, train_data$price)
+
+# Evaluate performance on test data
+knn_test_predictions <- predict(model_knn, test_data)
+knn_test_rmse <- RMSE(knn_test_predictions, test_data$asking_price)
+knn_test_r2 <- R2(knn_test_predictions, test_data$asking_price)
+
+# Print results
+cat("KNN - Training RMSE:", knn_train_rmse, "\n")
+cat("KNN - Training R²:", knn_train_r2, "\n")
+cat("KNN - Test RMSE:", knn_test_rmse, "\n")
+cat("KNN - Test R²:", knn_test_r2, "\n")
+
+```
+
+
+
+# Combining the results
+
+```{r}
+
+# Compile RMSE and R² results for all models
+model_results <- data.frame(
+  Model = c("Linear Regression", "Decision Tree", "Random Forest", "KNN"),
+  Training_RMSE = c(
+    RMSE(train_predictions, train_data$price),          # Linear Regression Training RMSE
+    RMSE(tree_train_predictions, train_data$price),     # Decision Tree Training RMSE
+    RMSE(rf_train_predictions, train_data$price),       # Random Forest Training RMSE
+    RMSE(knn_train_predictions, train_data$price)       # KNN Training RMSE
+  ),
+  Training_Rsquared = c(
+    R2(train_predictions, train_data$price),            # Linear Regression Training R²
+    R2(tree_train_predictions, train_data$price),       # Decision Tree Training R²
+    R2(rf_train_predictions, train_data$price),         # Random Forest Training R²
+    R2(knn_train_predictions, train_data$price)         # KNN Training R²
+  ),
+  Test_RMSE = c(
+    RMSE(lm_predictions, test_data$asking_price),       # Linear Regression Test RMSE
+    RMSE(tree_test_predictions, test_data$asking_price),# Decision Tree Test RMSE
+    RMSE(rf_test_predictions, test_data$asking_price),  # Random Forest Test RMSE
+    RMSE(knn_test_predictions, test_data$asking_price)  # KNN Test RMSE
+  ),
+  Test_Rsquared = c(
+    R2(lm_predictions, test_data$asking_price),         # Linear Regression Test R²
+    R2(tree_test_predictions, test_data$asking_price),  # Decision Tree Test R²
+    R2(rf_test_predictions, test_data$asking_price),    # Random Forest Test R²
+    R2(knn_test_predictions, test_data$asking_price)    # KNN Test R²
+  )
+)
+
+# Print the results
+print(model_results)
+
+# Visualize the RMSE results
+library(ggplot2)
+ggplot(model_results, aes(x = Model)) +
+  geom_bar(aes(y = Test_RMSE, fill = "Test RMSE"), stat = "identity", position = "dodge") +
+  geom_bar(aes(y = Training_RMSE, fill = "Training RMSE"), stat = "identity", position = "dodge") +
+  labs(title = "Model Performance: RMSE Comparison", y = "RMSE", fill = "Dataset") +
+  theme_minimal()
+
+# Visualize the R² results
+ggplot(model_results, aes(x = Model)) +
+  geom_bar(aes(y = Test_Rsquared, fill = "Test R²"), stat = "identity", position = "dodge") +
+  geom_bar(aes(y = Training_Rsquared, fill = "Training R²"), stat = "identity", position = "dodge") +
+  labs(title = "Model Performance: R² Comparison", y = "R²", fill = "Dataset") +
+  theme_minimal()
+
+```
+
+
+# Stacking Ensemble
+
+```{r,warning=FALSE,  message=FALSE }
+# Step 1: Create Base Model Predictions on Training Data
+train_predictions <- data.frame(
+  lm = predict(model_lm, train_data),
+  tree = predict(model2_tree, train_data),
+  rf = predict(model_rf, train_data),
+  knn = predict(model_knn, train_data),
+  actual = train_data$price
+)
+
+# Step 2: Train a Meta-Model
+meta_model <- train(
+  actual ~ lm + tree + rf + knn,
+  data = train_predictions,
+  method = "lm", # I have tried other methods
+  trControl = control
+)
+
+# Step 3: Create Base Model Predictions on Test Data
+test_predictions <- data.frame(
+  lm = predict(model_lm, test_data),
+  tree = predict(model2_tree, test_data),
+  rf = predict(model_rf, test_data),
+  knn = predict(model_knn, test_data)
+)
+
+# Step 4: Predict with Meta-Model
+stacked_predictions <- predict(meta_model, test_predictions)
+
+# Step 5: Evaluate Stacked Model Performance
+stacked_rmse <- RMSE(stacked_predictions, test_data$asking_price)
+stacked_r2 <- R2(stacked_predictions, test_data$asking_price)
+
+cat("Stacked Model - Test RMSE:", stacked_rmse, "\n")
+cat("Stacked Model - Test R²:", stacked_r2, "\n")
+
+
+```
+
+
+
+
+```{r}
+# Step 1: Gather Predictions on Test Data
+comparison_df <- data.frame(
+  Actual_Asking_Price = test_data$asking_price,
+  Linear_Regression = lm_predictions,
+  Decision_Tree = tree_test_predictions,
+  Random_Forest = rf_test_predictions,
+  KNN = knn_test_predictions,
+  Stacked_Model = stacked_predictions
+)
+
+# Step 2: Calculate Absolute Errors for Each Model
+comparison_df <- comparison_df %>%
+  mutate(
+    Abs_Error_LR = abs(Actual_Asking_Price - Linear_Regression),
+    Abs_Error_Tree = abs(Actual_Asking_Price - Decision_Tree),
+    Abs_Error_RF = abs(Actual_Asking_Price - Random_Forest),
+    Abs_Error_KNN = abs(Actual_Asking_Price - KNN),
+    Abs_Error_Stacked = abs(Actual_Asking_Price - Stacked_Model)
+  )
+
+# Step 3: Summarize Errors for Each Model
+error_summary <- comparison_df %>%
+  summarise(
+    Mean_Abs_Error_LR = mean(Abs_Error_LR),
+    Mean_Abs_Error_Tree = mean(Abs_Error_Tree),
+    Mean_Abs_Error_RF = mean(Abs_Error_RF),
+    Mean_Abs_Error_KNN = mean(Abs_Error_KNN),
+    Mean_Abs_Error_Stacked = mean(Abs_Error_Stacked)
+  )
+
+# Step 4: Print the Error Summary
+cat("Mean Absolute Errors for Each Model:\n")
+print(error_summary)
+
+# Step 5: Visualize Predictions vs Actual Prices
+library(ggplot2)
+
+comparison_df_long <- comparison_df %>%
+  pivot_longer(cols = c(Linear_Regression, Decision_Tree, Random_Forest, KNN, Stacked_Model),
+               names_to = "Model",
+               values_to = "Predicted_Price")
+
+ggplot(comparison_df_long, aes(x = Actual_Asking_Price, y = Predicted_Price, color = Model)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  labs(
+    title = "Predictions vs Actual Asking Prices",
+    x = "Actual Asking Price",
+    y = "Predicted Price"
+  ) +
+  theme_minimal()
+
+```
+
+
+# Pick investments
+
+In this section you should use the best algorithm you identified to choose 200 properties from the out of sample data.
+
+```{r,warning=FALSE,  message=FALSE }
+# Load the out-of-sample data
+numchoose <- 200
+
+# Predict the value of houses using the Random Forest model
+test_data$predicted_price <- predict(model_rf, newdata = test_data)
+
+# Calculate profit margin (difference between predicted price and asking price)
+test_data <- test_data %>%
+  mutate(profit_margin = predicted_price - asking_price,
+         profit_percentage = profit_margin / asking_price * 100)
+
+# Select the top 200 properties with the highest profit margin
+top_200_investments <- test_data %>%
+  arrange(desc(profit_margin)) %>%
+  head(numchoose)
+
+# Add a 'buy' column to the out-of-sample data
+test_data <- test_data %>%
+  mutate(buy = ifelse(ID %in% top_200_investments$ID, 1, 0))
+
+# Save the modified dataset to a CSV file
+write.csv(test_data, "burquier-benjamin.csv", row.names = FALSE)
+
+# Confirm the first few rows of the output
+head(test_data)
+
+```
+
+
+```{r}
+# Load the out-of-sample data
+numchoose <- 200
+
+# Step 1: Create Base Model Predictions for Out-of-Sample Data
+oos_predictions <- data.frame(
+  lm = predict(model_lm, test_data),
+  tree = predict(model2_tree, test_data),
+  rf = predict(model_rf, test_data),
+  knn = predict(model_knn, test_data)
+)
+
+# Step 2: Predict with the Stacked Meta-Model
+test_data$predicted_price <- predict(meta_model, oos_predictions)
+
+# Step 3: Calculate Profit Margin
+test_data <- test_data %>%
+  mutate(profit_margin = predicted_price - asking_price,
+         profit_percentage = profit_margin / asking_price * 100)
+
+# Step 4: Select the Top 200 Investments
+top_200_investments <- test_data %>%
+  arrange(desc(profit_margin)) %>%
+  head(numchoose)
+
+# Step 5: Add a 'buy' Column
+test_data <- test_data %>%
+  mutate(buy = ifelse(ID %in% top_200_investments$ID, 1, 0))
+
+# Step 6: Save the Modified Dataset to a CSV File
+write.csv(test_data, "burquier-benjamin-stacked.csv", row.names = FALSE)
+
+# Confirm the First Few Rows of the Output
+head(test_data)
+
+```
+
